@@ -1,7 +1,37 @@
 use key_watch::baseline::{Baseline, BaselineEntry, BaselineError};
 use key_watch::report::{Finding, Severity};
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 use tempfile::tempdir;
+
+/// Runs `scan . --baseline <path> --update-baseline` in `cwd` against the
+/// repository's own detector set.
+fn run_update_baseline(cwd: &Path, baseline_path: &Path) {
+    let output = Command::new(env!("CARGO_BIN_EXE_key-watch"))
+        .env(
+            "KEYWATCH_CONFIG_PATH",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("detectors.toml"),
+        )
+        .args([
+            "scan",
+            ".",
+            "--baseline",
+            baseline_path
+                .to_str()
+                .expect("baseline path should be UTF-8"),
+            "--update-baseline",
+        ])
+        .current_dir(cwd)
+        .output()
+        .expect("run key-watch --update-baseline");
+
+    assert!(
+        output.status.success(),
+        "--update-baseline failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 fn make_finding(file: &str, line: usize, ftype: &str, content: &str, detector: &str) -> Finding {
     Finding {
@@ -202,4 +232,40 @@ fn test_baseline_update_preserves_existing() {
 
     assert_eq!(baseline.entries.len(), 1);
     assert_eq!(baseline.entries[0].file_path, "existing.txt");
+}
+
+#[test]
+fn test_update_baseline_refreshes_line_numbers_when_secret_moves() -> Result<(), String> {
+    let temp_dir = tempdir().map_err(|err| err.to_string())?;
+    let baseline_path = temp_dir.path().join("baseline.json");
+    let secret_file = temp_dir.path().join("secrets.txt");
+
+    fs::write(&secret_file, "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n")
+        .map_err(|err| err.to_string())?;
+    run_update_baseline(temp_dir.path(), &baseline_path);
+
+    let baseline = Baseline::load(&baseline_path).map_err(|err| err.to_string())?;
+    assert_eq!(baseline.entries.len(), 1, "one finding should be baselined");
+    assert_eq!(baseline.entries[0].line_number, 1);
+
+    // Same fingerprint on a later line: the update must move the recorded
+    // line with it instead of leaving a stale entry behind.
+    fs::write(
+        &secret_file,
+        "filler one\nfiller two\nfiller three\nAWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n",
+    )
+    .map_err(|err| err.to_string())?;
+    run_update_baseline(temp_dir.path(), &baseline_path);
+
+    let baseline = Baseline::load(&baseline_path).map_err(|err| err.to_string())?;
+    assert_eq!(
+        baseline.entries.len(),
+        1,
+        "the moved finding must not add a duplicate entry"
+    );
+    assert_eq!(
+        baseline.entries[0].line_number, 4,
+        "the recorded line number must follow the moved secret"
+    );
+    Ok(())
 }

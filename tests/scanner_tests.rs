@@ -1,4 +1,5 @@
 use key_watch::cli::ScanArgs;
+use key_watch::report::create_report;
 use key_watch::scanner::{ScannerError, run_scan};
 use std::env::temp_dir;
 use std::fs;
@@ -121,7 +122,24 @@ sk-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX\n\
     };
 
     let (findings, _) = run_scan(&options, None).expect("run_scan should succeed");
-    assert!(!findings.is_empty(), "Should find secrets");
+    let finding_types: Vec<&str> = findings
+        .iter()
+        .map(|finding| finding.finding_type.as_str())
+        .collect();
+    assert_eq!(
+        finding_types,
+        vec![
+            "AWS Access Key",
+            "Password",
+            "Generic Key/Secret",
+            "Base64 Encoded String",
+            "SendGrid API Key",
+            "Base64 Encoded String",
+            "OpenAI API Key",
+            "Kimi/Moonshot API Key",
+        ],
+        "Should find secrets"
+    );
 
     fs::remove_file(test_file).expect("Cleanup");
 }
@@ -145,7 +163,14 @@ Stripe: sk_test_51ABCDEF12345678901234567890\n\
     };
 
     let (findings, _) = run_scan(&options, None).expect("run_scan should succeed");
-    assert!(!findings.is_empty(), "Should find API tokens");
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.finding_type.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Stripe API Key"],
+        "Should find API tokens"
+    );
 
     fs::remove_file(test_file).expect("Cleanup");
 }
@@ -170,7 +195,19 @@ AZURE_STORAGE=DefaultEndpointsProtocol=https;AccountName=examplestore;
     };
 
     let (findings, _) = run_scan(&options, None).expect("run_scan should succeed");
-    assert!(!findings.is_empty(), "Should find cloud credentials");
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.finding_type.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "AWS Access Key",
+            "Generic Key/Secret",
+            "Base64 Encoded String",
+            "Generic Key/Secret",
+        ],
+        "Should find cloud credentials"
+    );
 
     fs::remove_file(test_file).expect("Cleanup");
 }
@@ -196,7 +233,22 @@ b3BlbnNzaC1ldi0xLjAAABgQDQD2FGB3V2t4=\n\
     };
 
     let (findings, _) = run_scan(&options, None).expect("run_scan should succeed");
-    assert!(!findings.is_empty(), "Should find private keys");
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.finding_type.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "SSH Private Key",
+            "Private Key Content",
+            "Private Key Content",
+            "Base64 Encoded String",
+            "SSH Private Key",
+            "Private Key Content",
+            "Base64 Encoded String",
+        ],
+        "Should find private keys"
+    );
 
     fs::remove_file(test_file).expect("Cleanup");
 }
@@ -404,8 +456,15 @@ fn test_multiple_files_scan() {
     };
 
     let (findings, metadata) = run_scan(&options, None).expect("run_scan should succeed");
-    assert!(
-        !findings.is_empty(),
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| (finding.file_path.as_str(), finding.finding_type.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (test_file2.to_str().unwrap(), "Password"),
+            (test_file2.to_str().unwrap(), "Generic Key/Secret"),
+        ],
         "Should find secrets in multiple files"
     );
     assert_eq!(metadata.files_scanned, 2, "Should scan 2 files");
@@ -2436,6 +2495,49 @@ fn test_stdin_with_nul_bytes_scans_through() -> Result<(), String> {
         Some(1),
         "the secret after the NUL line must be found, got:\n{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn test_scan_reports_are_byte_identical_across_runs() -> Result<(), String> {
+    // Detector iteration and rayon scheduling must not leak into the report:
+    // the same tree scanned twice produces the same bytes.
+    let dir = unique_temp_dir("deterministic_report");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(
+        dir.join("a.conf"),
+        "aws_access_key_id = AKIAABCDEFGHIJKLMNOP\npassword = 'mySecretPassword'\n",
+    )
+    .map_err(|e| e.to_string())?;
+    fs::write(
+        dir.join("b.conf"),
+        "xoxb-abcdefghijklmnop-qrstuvwxyz-123456789012\n",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let options = ScanArgs {
+        paths: vec![dir.to_str().expect("temp path should be UTF-8").to_string()],
+        no_baseline_discovery: true,
+        ..Default::default()
+    };
+
+    let (findings_first, metadata_first) =
+        run_scan(&options, None).expect("first run_scan should succeed");
+    let (findings_second, metadata_second) =
+        run_scan(&options, None).expect("second run_scan should succeed");
+
+    let report_first = create_report(findings_first, metadata_first, "0.0s".to_string(), false)
+        .expect("first report should serialize");
+    let report_second = create_report(findings_second, metadata_second, "0.0s".to_string(), false)
+        .expect("second report should serialize");
+
+    assert_eq!(
+        report_first, report_second,
+        "scanning the same fixture twice must produce byte-identical reports"
     );
 
     let _ = fs::remove_dir_all(&dir);

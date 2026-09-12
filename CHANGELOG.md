@@ -115,7 +115,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- `get_severity_counts()` now returns 4-tuple (Critical, High, Medium, Low) instead of 3-tuple
+- `get_severity_counts()` now returns a `SeverityCounts` struct with `critical`, `high`, `medium`, and `low` fields instead of a tuple
 - `run_scan()` accepts optional `config` parameter for merging user configuration
 - Simplified distribution to a single shipped binary: `key-watch`
 - Git hook installation now supports first-class global hooks via `core.hooksPath`

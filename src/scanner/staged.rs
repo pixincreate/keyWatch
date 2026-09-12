@@ -6,7 +6,8 @@ use crate::report::{Finding, ScanMetadata};
 use crate::scanner::ScannerError;
 use crate::scanner::files::{is_baseline_file, is_default_excluded_file, matches_exclude_patterns};
 use crate::scanner::lines::{
-    LineScanContext, LineScratch, scan_content, scan_line_detectors, scan_multiline_chunk,
+    LineScanContext, LineScratch, read_raw_line, scan_content, scan_line_detectors,
+    scan_multiline_chunk,
 };
 use glob::Pattern;
 use std::collections::HashSet;
@@ -117,29 +118,109 @@ fn parse_diff_target_path(target: &str) -> Option<String> {
     Some(target.to_string())
 }
 
-fn flush_staged_hunk(
-    path: Option<&str>,
+/// Parser state for one diff, kept out of the line loop so every framing rule
+/// reads on its own. Hunk state is tracked because added content may itself
+/// start with "+", "@@" or "diff ".
+#[derive(Default)]
+struct StagedDiffState {
+    current_path: Option<String>,
+    in_hunk: bool,
+    next_line_number: usize,
     hunk_start: usize,
-    hunk_added: &mut Vec<String>,
-    multiline_detectors: &[&Detector],
-    findings: &mut Vec<Finding>,
-) {
-    if hunk_added.is_empty() {
-        return;
+    hunk_added: Vec<String>,
+    total_lines: usize,
+    scanned_files: std::collections::BTreeSet<String>,
+    excluded_files: Vec<String>,
+    unscannable_from_diff: Vec<String>,
+}
+
+impl StagedDiffState {
+    /// Scans the buffered added lines of the hunk that just ended, or the
+    /// whole diff when the stream ends.
+    fn flush_hunk(&mut self, multiline_detectors: &[&Detector], findings: &mut Vec<Finding>) {
+        if self.hunk_added.is_empty() {
+            return;
+        }
+        if let Some(path) = self.current_path.as_deref() {
+            let chunk = self.hunk_added.join("\n");
+            let mut reported = HashSet::new();
+            scan_multiline_chunk(
+                &chunk,
+                self.hunk_start.saturating_sub(1),
+                path,
+                multiline_detectors,
+                findings,
+                &mut reported,
+            );
+        }
+        self.hunk_added.clear();
     }
-    if let Some(path) = path {
-        let chunk = hunk_added.join("\n");
-        let mut reported = HashSet::new();
-        scan_multiline_chunk(
-            &chunk,
-            hunk_start.saturating_sub(1),
-            path,
-            multiline_detectors,
-            findings,
-            &mut reported,
-        );
+
+    fn handle_added_line(
+        &mut self,
+        content: &str,
+        context: &LineScanContext<'_>,
+        scratch: &mut LineScratch,
+        findings: &mut Vec<Finding>,
+    ) {
+        let line_number = self.next_line_number;
+        self.next_line_number += 1;
+        let Some(path) = self.current_path.as_deref() else {
+            return;
+        };
+        self.total_lines += 1;
+        self.scanned_files.insert(path.to_string());
+        scan_line_detectors(content, line_number, path, context, scratch, findings);
+        self.hunk_added.push(content.to_string());
     }
-    hunk_added.clear();
+
+    /// A `+++ b/path` header selects the post-image path unless an exclusion
+    /// or the baseline file itself rules it out.
+    fn select_path(
+        &mut self,
+        target: &str,
+        exclude_patterns: &[Pattern],
+        excluded_baseline: Option<&PathBuf>,
+        base_dir: &Path,
+    ) {
+        self.current_path = match parse_diff_target_path(target) {
+            Some(path)
+                if matches_exclude_patterns(&path, &[], exclude_patterns)
+                    || is_baseline_file(&path, base_dir, excluded_baseline)
+                    || is_default_excluded_file(&path) =>
+            {
+                self.excluded_files.push(path);
+                None
+            }
+            other => other,
+        };
+    }
+
+    /// A `Binary files ... differ` marker (a true binary or a `-diff`
+    /// gitattribute) yields no hunks. The diff tells us nothing about the
+    /// content, so record the path and read the staged blob directly instead
+    /// of reporting the file as clean.
+    fn record_binary_marker(
+        &mut self,
+        marker: &str,
+        exclude_patterns: &[Pattern],
+        excluded_baseline: Option<&PathBuf>,
+        base_dir: &Path,
+    ) {
+        let path = parse_binary_marker_path(marker);
+        // A deleted file has no staged content left to read.
+        if path == "/dev/null" {
+            return;
+        }
+        if matches_exclude_patterns(&path, &[], exclude_patterns)
+            || is_baseline_file(&path, base_dir, excluded_baseline)
+            || is_default_excluded_file(&path)
+        {
+            self.excluded_files.push(path);
+        } else {
+            self.unscannable_from_diff.push(path);
+        }
+    }
 }
 
 /// Best-effort path from a `Binary files a/x and b/x differ` marker: the
@@ -181,56 +262,16 @@ pub(super) fn scan_staged_diff<ReaderType: BufRead>(
 ) -> Result<StagedScan, ScannerError> {
     let context = LineScanContext::new(line_detectors);
     let mut findings = Vec::new();
-    let mut total_lines = 0;
-    let mut scanned_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut excluded_files: Vec<String> = Vec::new();
-    let mut unscannable_from_diff: Vec<String> = Vec::new();
-    let mut current_path: Option<String> = None;
-    let mut in_hunk = false;
-    let mut next_line_number = 0;
-    let mut hunk_start = 0;
-    let mut hunk_added: Vec<String> = Vec::new();
+    let mut state = StagedDiffState::default();
     let mut scratch = LineScratch::default();
     let mut raw_line: Vec<u8> = Vec::new();
 
-    loop {
-        raw_line.clear();
-        let bytes_read =
-            reader
-                .read_until(b'\n', &mut raw_line)
-                .map_err(|source| ScannerError::ReadStream {
-                    path: "<staged>".to_string(),
-                    source,
-                })?;
-        if bytes_read == 0 {
-            break;
-        }
-        if raw_line.last() == Some(&b'\n') {
-            raw_line.pop();
-        }
-        if raw_line.last() == Some(&b'\r') {
-            raw_line.pop();
-        }
+    while read_raw_line(&mut reader, "<staged>", &mut raw_line)? {
         let line = String::from_utf8_lossy(&raw_line);
 
-        if in_hunk {
+        if state.in_hunk {
             if let Some(content) = line.strip_prefix('+') {
-                let line_number = next_line_number;
-                next_line_number += 1;
-                let Some(path) = current_path.as_deref() else {
-                    continue;
-                };
-                total_lines += 1;
-                scanned_files.insert(path.to_string());
-                scan_line_detectors(
-                    content,
-                    line_number,
-                    path,
-                    &context,
-                    &mut scratch,
-                    &mut findings,
-                );
-                hunk_added.push(content.to_string());
+                state.handle_added_line(content, &context, &mut scratch, &mut findings);
                 continue;
             }
             if line.starts_with('-') || line.starts_with('\\') {
@@ -239,79 +280,36 @@ pub(super) fn scan_staged_diff<ReaderType: BufRead>(
         }
 
         if line.starts_with("@@") {
-            flush_staged_hunk(
-                current_path.as_deref(),
-                hunk_start,
-                &mut hunk_added,
-                multiline_detectors,
-                &mut findings,
-            );
-            hunk_start = parse_hunk_new_start(&line);
-            next_line_number = hunk_start;
-            in_hunk = true;
+            state.flush_hunk(multiline_detectors, &mut findings);
+            state.hunk_start = parse_hunk_new_start(&line);
+            state.next_line_number = state.hunk_start;
+            state.in_hunk = true;
             continue;
         }
 
         if line.starts_with("diff ") {
-            flush_staged_hunk(
-                current_path.as_deref(),
-                hunk_start,
-                &mut hunk_added,
-                multiline_detectors,
-                &mut findings,
-            );
-            in_hunk = false;
-            current_path = None;
+            state.flush_hunk(multiline_detectors, &mut findings);
+            state.in_hunk = false;
+            state.current_path = None;
             continue;
         }
 
         if let Some(target) = line.strip_prefix("+++ ") {
-            current_path = match parse_diff_target_path(target) {
-                Some(path)
-                    if matches_exclude_patterns(&path, &[], exclude_patterns)
-                        || is_baseline_file(&path, base_dir, excluded_baseline)
-                        || is_default_excluded_file(&path) =>
-                {
-                    excluded_files.push(path);
-                    None
-                }
-                other => other,
-            };
+            state.select_path(target, exclude_patterns, excluded_baseline, base_dir);
             continue;
         }
 
-        // A `-diff` gitattribute (or a true binary) yields no hunks. The diff
-        // tells us nothing about the content, so record the path and read the
-        // staged blob directly rather than reporting the file as clean.
         if let Some(marker) = line.strip_prefix("Binary files ") {
-            let path = parse_binary_marker_path(marker);
-            // A deleted file has no staged content left to read.
-            if path == "/dev/null" {
-                continue;
-            }
-            if matches_exclude_patterns(&path, &[], exclude_patterns)
-                || is_baseline_file(&path, base_dir, excluded_baseline)
-                || is_default_excluded_file(&path)
-            {
-                excluded_files.push(path);
-            } else {
-                unscannable_from_diff.push(path);
-            }
+            state.record_binary_marker(marker, exclude_patterns, excluded_baseline, base_dir);
         }
     }
 
-    flush_staged_hunk(
-        current_path.as_deref(),
-        hunk_start,
-        &mut hunk_added,
-        multiline_detectors,
-        &mut findings,
-    );
+    state.flush_hunk(multiline_detectors, &mut findings);
 
     let metadata = ScanMetadata {
-        files_scanned: scanned_files.len(),
-        total_lines,
-        excluded_files,
+        files_scanned: state.scanned_files.len(),
+        total_lines: state.total_lines,
+        excluded_files: state.excluded_files,
         unscannable_files: Vec::new(),
         suppressed_by_baseline: 0,
     };
@@ -319,7 +317,7 @@ pub(super) fn scan_staged_diff<ReaderType: BufRead>(
     Ok(StagedScan {
         findings,
         metadata,
-        unscannable_from_diff,
+        unscannable_from_diff: state.unscannable_from_diff,
     })
 }
 

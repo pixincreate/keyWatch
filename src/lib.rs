@@ -65,14 +65,18 @@ fn run_scan_command(args: &ScanArgs) -> Result<i32, RunCliError> {
     let config = load_scan_config(&args)?;
     let (mut findings, mut scan_metadata) = scanner::run_scan(&args, config.as_ref())?;
 
-    // Pruning rewrites the baseline from what the scan actually found, so the
-    // existing entries must not filter those findings away first.
+    // Pruning rewrites the baseline from what the scan actually found, and a
+    // plain update must refresh the recorded line numbers of known findings,
+    // so neither may filter the findings first.
     let prune = args.prune_baseline && args.update_baseline;
     let mut loaded_baseline = match args.baseline.as_deref() {
         Some(path) => Some(baseline::Baseline::load(std::path::Path::new(path))?),
         None => None,
     };
-    if let Some(baseline) = &loaded_baseline.as_ref().filter(|_| !prune) {
+    if let Some(baseline) = loaded_baseline
+        .as_ref()
+        .filter(|_| !prune && !args.update_baseline)
+    {
         let before = findings.len();
         findings = baseline.filter_findings(findings);
         scan_metadata.suppressed_by_baseline = before - findings.len();
@@ -266,6 +270,10 @@ fn print_shell_init(shell: &Shell) -> Result<(), RunCliError> {
     emit(script.trim_end())
 }
 
+/// Checks the running binary's file permissions, the one property it can
+/// verify about itself: no cryptographic checksum is involved, so the report
+/// says exactly what was checked. On unix a world-writable binary is an
+/// error; other platforms have no equivalent permission bit to test.
 fn verify_binary_integrity() -> Result<(), RunCliError> {
     let exe_path = env::current_exe().map_err(|source| RunCliError::ExecutablePath { source })?;
     let metadata = exe_path
@@ -278,11 +286,19 @@ fn verify_binary_integrity() -> Result<(), RunCliError> {
         let perms = metadata.permissions();
         let mode = perms.mode();
         if mode & 0o002 != 0 {
-            eprintln!("WARNING: Binary is world-writable! Integrity may be compromised.");
+            return Err(RunCliError::WorldWritableBinary {
+                path: exe_path.to_string_lossy().into_owned(),
+            });
         }
+        emit(&format!(
+            "Binary permissions verified: {exe_path:?} is not world-writable"
+        ))?;
     }
+    #[cfg(not(unix))]
+    emit(&format!(
+        "Binary located: {exe_path:?} (permission checks run on unix only)"
+    ))?;
 
-    emit(&format!("Binary integrity verified: {exe_path:?}"))?;
     emit(&format!("Size: {} bytes", metadata.len()))
 }
 

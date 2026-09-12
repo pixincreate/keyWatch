@@ -115,7 +115,6 @@ fn passes_verhoeff(matched: &str) -> bool {
     check == 0
 }
 
-/// Luhn checksum, ignoring embedded separators.
 #[cfg(test)]
 mod verhoeff_tests {
     use super::passes_verhoeff;

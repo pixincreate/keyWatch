@@ -254,6 +254,7 @@ pub enum Shell {
 
 #[derive(ValueEnum, Clone, Debug, Default, PartialEq, Eq)]
 pub enum ExitMode {
+    /// Never fails: findings are reported but the exit code stays 0.
     Always,
     Critical,
     #[default]

@@ -40,6 +40,10 @@ pub enum RunCliError {
     MissingBaselineForUpdate,
     #[error("Baseline file not found: '{path}' (pass --update-baseline to create it)")]
     BaselineNotFound { path: String },
+    #[error(
+        "Binary is world-writable: '{path}'; its permissions do not protect it from modification"
+    )]
+    WorldWritableBinary { path: String },
     #[error("Failed to serialize report: {source}")]
     ReportSerialize { source: serde_json::Error },
     #[error("Failed to write report to '{path}': {source}")]

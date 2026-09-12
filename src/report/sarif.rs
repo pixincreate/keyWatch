@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 /// Generate a SARIF 2.1.0 report from findings.
 pub fn create_sarif_report(
     findings: Vec<Finding>,
-    _metadata: ScanMetadata,
+    metadata: ScanMetadata,
     scan_time: String,
 ) -> Result<String, serde_json::Error> {
     #[derive(Serialize)]
@@ -129,12 +129,34 @@ pub fn create_sarif_report(
 
     let status = if results.is_empty() { "pass" } else { "fail" };
 
+    // Scan counts only: the BTreeMap serializes in key order, so the payload
+    // is deterministic, and no matched content enters the run metadata.
     let mut properties = BTreeMap::new();
     properties.insert(
         "status".to_string(),
         serde_json::Value::String(status.to_string()),
     );
     properties.insert("scanTime".to_string(), serde_json::Value::String(scan_time));
+    properties.insert(
+        "filesScanned".to_string(),
+        serde_json::Value::from(metadata.files_scanned),
+    );
+    properties.insert(
+        "totalLines".to_string(),
+        serde_json::Value::from(metadata.total_lines),
+    );
+    properties.insert(
+        "excludedFiles".to_string(),
+        serde_json::Value::from(metadata.excluded_files.len()),
+    );
+    properties.insert(
+        "unscannableFiles".to_string(),
+        serde_json::Value::from(metadata.unscannable_files.len()),
+    );
+    properties.insert(
+        "suppressedByBaseline".to_string(),
+        serde_json::Value::from(metadata.suppressed_by_baseline),
+    );
 
     let log = SarifLog {
         schema: "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",

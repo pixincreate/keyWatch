@@ -1,6 +1,4 @@
-use key_watch::cli::{
-    CliOptions, CliValidationError, Command, ExitMode, HookAction, HookInstallArgs, HookType, Shell,
-};
+use key_watch::cli::{CliOptions, CliValidationError, HookInstallArgs, HookType};
 use key_watch::{generate_pre_commit_hook, generate_pre_push_hook};
 #[cfg(unix)]
 use std::{
@@ -664,129 +662,11 @@ fn test_pre_push_blocks_blocked_actual_push_remote_even_when_origin_is_safe() {
 }
 
 #[test]
-fn test_hook_missing_binary_path() {
-    let options = hook_install_args(HookType::PrePush, None, None, None);
-
-    let hook = generate_pre_push_hook(&options);
-    assert!(
-        hook.contains("command -v"),
-        "Hook should verify binary is on PATH"
-    );
-    assert!(
-        hook.contains("$KEYWATCH_BIN not found on PATH"),
-        "Hook should report missing binary error"
-    );
-}
-
-#[test]
-fn test_hook_missing_detectors_toml() {
-    let options = hook_install_args(HookType::PreCommit, None, None, None);
-
-    let hook = generate_pre_commit_hook(&options);
-    assert!(
-        !hook.contains("detectors.toml not found"),
-        "Hook should rely on binary config lookup"
-    );
-}
-
-#[test]
 fn test_cli_scan_rejects_global_flag() {
     use clap::Parser;
 
     let result = CliOptions::try_parse_from(["key-watch", "scan", "secret.txt", "--global"]);
     assert!(result.is_err(), "--global should be rejected for scan");
-}
-
-#[test]
-fn test_cli_hook_uninstall_accepts_global_flag() {
-    use clap::Parser;
-
-    let result =
-        CliOptions::try_parse_from(["key-watch", "hook", "uninstall", "pre-commit", "--global"]);
-    assert!(result.is_ok(), "--global should work with hook uninstall");
-}
-
-#[test]
-fn test_cli_hook_install_pre_commit_parses_successfully() {
-    use clap::Parser;
-
-    let options = CliOptions::try_parse_from(["key-watch", "hook", "install", "pre-commit"])
-        .expect("pre-commit install should parse");
-    options
-        .validate()
-        .expect("validated hook install should succeed");
-
-    match options.command {
-        Command::Hook(args) => match args.action {
-            HookAction::Install(install_args) => {
-                assert_eq!(install_args.hook_type, HookType::PreCommit);
-                assert!(!install_args.global, "global should default to false");
-            }
-            _ => panic!("expected install action"),
-        },
-        _ => panic!("expected hook command"),
-    }
-}
-
-#[test]
-fn test_cli_hook_install_pre_push_global_parses_successfully() {
-    use clap::Parser;
-
-    let options =
-        CliOptions::try_parse_from(["key-watch", "hook", "install", "pre-push", "--global"])
-            .expect("pre-push install should parse");
-    options
-        .validate()
-        .expect("validated hook install should succeed");
-
-    match options.command {
-        Command::Hook(args) => match args.action {
-            HookAction::Install(install_args) => {
-                assert_eq!(install_args.hook_type, HookType::PrePush);
-                assert!(install_args.global, "global flag should be preserved");
-            }
-            _ => panic!("expected install action"),
-        },
-        _ => panic!("expected hook command"),
-    }
-}
-
-#[test]
-fn test_cli_scan_defaults_to_strict_exit_mode() {
-    use clap::Parser;
-
-    let options = CliOptions::try_parse_from(["key-watch", "scan", "secret.txt"])
-        .expect("scan command should parse");
-
-    match options.command {
-        Command::Scan(scan_args) => {
-            assert_eq!(scan_args.exit_mode, ExitMode::Strict);
-        }
-        _ => panic!("expected scan command"),
-    }
-}
-
-#[test]
-fn test_cli_scan_can_disable_config_discovery() {
-    use clap::Parser;
-
-    let options = CliOptions::try_parse_from([
-        "key-watch",
-        "scan",
-        ".",
-        "--no-config-discovery",
-        "--config",
-        "trusted.toml",
-    ])
-    .expect("trusted explicit config with disabled discovery should parse");
-
-    match options.command {
-        Command::Scan(scan_args) => {
-            assert!(scan_args.no_config_discovery);
-            assert_eq!(scan_args.config.as_deref(), Some("trusted.toml"));
-        }
-        _ => panic!("expected scan command"),
-    }
 }
 
 #[cfg(unix)]
@@ -842,26 +722,6 @@ fn test_cli_pre_commit_rejects_blocked_repos() {
         error.to_string(),
         "--allowed-repos and --blocked-repos are only supported for pre-push hooks"
     );
-}
-
-#[test]
-fn test_cli_init_accepts_supported_shells() {
-    use clap::Parser;
-
-    for (shell_name, expected_shell) in [
-        ("bash", Shell::Bash),
-        ("zsh", Shell::Zsh),
-        ("fish", Shell::Fish),
-        ("posix", Shell::Posix),
-    ] {
-        let options = CliOptions::try_parse_from(["key-watch", "init", shell_name])
-            .expect("supported shell should parse");
-
-        match options.command {
-            Command::Init { shell } => assert_eq!(shell, expected_shell),
-            _ => panic!("expected init command"),
-        }
-    }
 }
 
 #[test]

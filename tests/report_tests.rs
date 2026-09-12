@@ -107,11 +107,11 @@ fn test_create_sarif_report_uses_camel_case_fields_and_hides_matched_content() {
         detector_name: "AwsKeyDetector".to_string(),
     }];
     let metadata = ScanMetadata {
-        files_scanned: 1,
-        total_lines: 12,
-        excluded_files: vec![],
-        unscannable_files: vec![],
-        suppressed_by_baseline: 0,
+        files_scanned: 5,
+        total_lines: 120,
+        excluded_files: vec!["skip.log".to_string()],
+        unscannable_files: vec!["blob.bin".to_string()],
+        suppressed_by_baseline: 3,
     };
 
     let sarif = create_sarif_report(findings, metadata, "2026-08-01T00:00:00Z".to_string())
@@ -130,6 +130,33 @@ fn test_create_sarif_report_uses_camel_case_fields_and_hides_matched_content() {
     assert!(driver.get("semanticVersion").is_some());
     assert!(driver.get("information_uri").is_none());
     assert!(driver.get("semantic_version").is_none());
+
+    let properties = &json["runs"][0]["properties"];
+    let property_keys: Vec<&str> = properties
+        .as_object()
+        .expect("run properties object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        property_keys,
+        vec![
+            "excludedFiles",
+            "filesScanned",
+            "scanTime",
+            "status",
+            "suppressedByBaseline",
+            "totalLines",
+            "unscannableFiles",
+        ],
+        "run scan counts must serialize in deterministic key order"
+    );
+    assert_eq!(properties["filesScanned"], 5);
+    assert_eq!(properties["totalLines"], 120);
+    assert_eq!(properties["excludedFiles"], 1);
+    assert_eq!(properties["unscannableFiles"], 1);
+    assert_eq!(properties["suppressedByBaseline"], 3);
+    assert_eq!(properties["status"], "fail");
 
     let result = &json["runs"][0]["results"][0];
     assert_eq!(result["ruleId"], "AWS Key");

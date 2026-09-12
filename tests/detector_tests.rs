@@ -14,20 +14,13 @@ fn test_allowlist_suppresses_matched_content() -> Result<(), DetectorError> {
         None,
     )?;
 
-    assert!(detector.regex.is_match("secret_here"));
     assert!(
-        detector
-            .allowlist
-            .iter()
-            .any(|p| p.is_match("secret_allowed")),
-        "Allowlist should match 'secret_allowed'"
+        detector.accepts_match("secret_here"),
+        "a match the allowlist does not cover must be accepted"
     );
     assert!(
-        !detector
-            .allowlist
-            .iter()
-            .any(|p| p.is_match("secret_blocked")),
-        "Allowlist should not match 'secret_blocked'"
+        !detector.accepts_match("secret_allowed"),
+        "the allowlist must reject its matching token"
     );
     Ok(())
 }
@@ -44,8 +37,10 @@ fn test_detector_without_allowlist_allows_all() -> Result<(), DetectorError> {
         None,
     )?;
 
-    assert!(detector.allowlist.is_empty());
-    assert!(detector.regex.is_match("secret_anything"));
+    assert!(
+        detector.accepts_match("secret_anything"),
+        "without an allowlist every regex match is accepted"
+    );
     Ok(())
 }
 

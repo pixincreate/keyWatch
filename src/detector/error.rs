@@ -6,8 +6,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DetectorInitError {
-    #[error("Failed to locate {}", DETECTORS_FILE_NAME)]
-    ConfigNotFound,
     #[error("Failed to read {}: {source}", path.display())]
     ReadConfig { path: PathBuf, source: io::Error },
     #[error("Failed to parse {}: {source}", DETECTORS_FILE_NAME)]

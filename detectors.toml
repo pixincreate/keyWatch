@@ -13,7 +13,6 @@ name = "GoogleAPIKeyDetector"
 pattern = "\\bAIza[0-9A-Za-z\\-_]{35}\\b"
 finding_type = "Google API Key"
 severity = "HIGH"
-description = "Covers Google, Firebase, and YouTube API keys (same pattern)"
 keywords = ["AIza"]
 
 [[detectors]]
@@ -283,7 +282,6 @@ name = "OpenAIAPIKeyDetector"
 pattern = "\\bsk-[a-zA-Z0-9]{48,}\\b"
 finding_type = "OpenAI API Key"
 severity = "HIGH"
-description = "OpenAI API keys (sk- prefix + 48+ alphanumeric chars). Covers both standard and project-scoped keys."
 keywords = ["sk-"]
 
 [[detectors]]
@@ -291,7 +289,6 @@ name = "OpenCodeAPIKeyDetector"
 pattern = "(?i)(?:opencode|OPENCODE_API_KEY)[\\s'\":=]+[\"']?(sk-[a-zA-Z0-9]{20,})[\"']?"
 finding_type = "OpenCode API Key"
 severity = "HIGH"
-description = "OpenCode AI API keys (sk- prefix). Detected via context (opencode/OPENCODE_API_KEY). Shares sk- prefix with OpenAI and Kimi."
 
 [[detectors]]
 name = "AzureStorageAccountKeyDetector"

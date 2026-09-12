@@ -390,9 +390,44 @@ fn test_verify_integrity_command() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Binary integrity verified") || stdout.contains("Size:"),
-        "Should contain integrity check output"
+        stdout.contains("Binary permissions verified") && stdout.contains("not world-writable"),
+        "the success message must say which check ran, got:\n{stdout}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_verify_integrity_rejects_world_writable_binary() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = unique_test_dir("world_writable_integrity");
+    fs::create_dir_all(&dir).expect("Create test dir");
+    let binary = dir.join("key-watch");
+    fs::copy(env!("CARGO_BIN_EXE_key-watch"), &binary).expect("Copy binary");
+    let mut permissions = fs::metadata(&binary)
+        .expect("Read binary metadata")
+        .permissions();
+    permissions.set_mode(0o777);
+    fs::set_permissions(&binary, permissions).expect("Mark binary world-writable");
+
+    let output = Command::new(&binary)
+        .arg("verify-integrity")
+        .output()
+        .expect("Run verify-integrity");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a world-writable binary must fail the check, got:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("world-writable"),
+        "the error must name the failed property, got:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

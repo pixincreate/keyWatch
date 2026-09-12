@@ -202,7 +202,7 @@ key-watch verify-integrity
 - `hook install pre-push --blocked-repos <urls>` - Block repos for pre-push hooks
 - `hook install pre-commit --exclude <patterns>` - Exclude patterns for pre-commit scans
 - `init <shell>` - Print shell aliases for `keywatch` and `kw`
-- `verify-integrity` - Check binary hasn't been tampered with
+- `verify-integrity` - Check the running binary's file permissions (fails when it is world-writable on unix); this is a permission check, not a cryptographic checksum
 
 ## Aliases
 

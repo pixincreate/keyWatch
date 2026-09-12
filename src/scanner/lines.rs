@@ -11,8 +11,40 @@ use std::io::BufRead;
 
 const INLINE_SUPPRESS: &str = "keywatch:ignore";
 
-fn is_inline_suppressed(line: &str) -> bool {
-    line.to_lowercase().contains(INLINE_SUPPRESS)
+/// Whether a line carries the inline suppression marker. `lowered_line` must
+/// already be lowercased by [`to_lowercase_into`], so callers reuse the
+/// buffer they already built instead of lowercasing twice.
+fn is_inline_suppressed(lowered_line: &str) -> bool {
+    lowered_line.contains(INLINE_SUPPRESS)
+}
+
+/// Reads one line into `raw_line` (cleared first), returning `false` at end
+/// of stream. Strips a trailing `\n` and `\r`. The caller decodes lossily:
+/// one invalid byte must not abort a scan. Shared by the stream and staged
+/// parsers so terminator handling exists in exactly one place.
+pub(super) fn read_raw_line<ReaderType: BufRead>(
+    reader: &mut ReaderType,
+    path: &str,
+    raw_line: &mut Vec<u8>,
+) -> Result<bool, ScannerError> {
+    raw_line.clear();
+    let bytes_read =
+        reader
+            .read_until(b'\n', raw_line)
+            .map_err(|source| ScannerError::ReadStream {
+                path: path.to_string(),
+                source,
+            })?;
+    if bytes_read == 0 {
+        return Ok(false);
+    }
+    if raw_line.last() == Some(&b'\n') {
+        raw_line.pop();
+    }
+    if raw_line.last() == Some(&b'\r') {
+        raw_line.pop();
+    }
+    Ok(true)
 }
 
 /// Lowercases `src` into `buf` without allocating a fresh string per line.
@@ -173,7 +205,7 @@ pub(super) fn scan_line_detectors(
     findings: &mut Vec<Finding>,
 ) {
     to_lowercase_into(line, &mut scratch.lowered_line);
-    if scratch.lowered_line.contains(INLINE_SUPPRESS) {
+    if is_inline_suppressed(&scratch.lowered_line) {
         return;
     }
 
@@ -248,7 +280,7 @@ pub(super) fn scan_multiline_chunk(
                     .lines()
                     .nth(line_in_chunk.saturating_sub(1))
                     .unwrap_or_default();
-                let line_is_suppressed = is_inline_suppressed(line_content);
+                let line_is_suppressed = is_inline_suppressed(&line_content.to_lowercase());
 
                 if !line_is_suppressed && detector.accepts_captures(&captures) {
                     findings.push(Finding {
@@ -345,23 +377,8 @@ fn scan_lines<R: BufRead>(
     let mut raw_line: Vec<u8> = Vec::new();
 
     loop {
-        raw_line.clear();
-        let bytes_read =
-            reader
-                .read_until(b'\n', &mut raw_line)
-                .map_err(|source| ScannerError::ReadStream {
-                    path: path.to_string(),
-                    source,
-                })?;
-
-        if bytes_read == 0 {
+        if !read_raw_line(reader, path, &mut raw_line)? {
             break;
-        }
-        if raw_line.last() == Some(&b'\n') {
-            raw_line.pop();
-        }
-        if raw_line.last() == Some(&b'\r') {
-            raw_line.pop();
         }
         if matches!(binary_handling, BinaryHandling::StopAtNul) && raw_line.contains(&0) {
             binary = true;
